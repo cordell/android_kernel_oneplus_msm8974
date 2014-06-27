@@ -1413,22 +1413,18 @@ qpnp_chg_vbatdet_lo_irq_handler(int irq, void *_chip)
 	}
 	qpnp_chg_disable_irq(&chip->chg_vbatdet_lo);
 
-	pr_debug("psy changed usb_psy\n");
 #ifndef CONFIG_MACH_OPPO
 	power_supply_changed(chip->usb_psy);
-#endif
+	pr_debug("psy changed usb_psy\n");
 	if (chip->dc_chgpth_base) {
 		pr_debug("psy changed dc_psy\n");
-#ifndef CONFIG_MACH_OPPO
 		power_supply_changed(&chip->dc_psy);
-#endif
 	}
 	if (chip->bat_if_base) {
 		pr_debug("psy changed batt_psy\n");
-#ifndef CONFIG_MACH_OPPO
 		power_supply_changed(&chip->batt_psy);
-#endif
 	}
+#endif
 	return IRQ_HANDLED;
 }
 
@@ -1731,6 +1727,17 @@ qpnp_set_fast_low_temp_full_false(struct qpnp_chg_chip *chip)
 }
 
 static int
+get_prop_fast_normal_to_warm(struct qpnp_chg_chip *chip)
+{
+	if (qpnp_batt_gauge && qpnp_batt_gauge->fast_normal_to_warm)
+		return qpnp_batt_gauge->fast_normal_to_warm();
+	else {
+		pr_err("qpnp-charger no batt gauge assuming false\n");
+		return false;
+	}
+}
+
+static int
 set_fast_normal_to_warm_false(struct qpnp_chg_chip *chip)
 {
 	if (qpnp_batt_gauge && qpnp_batt_gauge->set_normal_to_warm_false)
@@ -1782,6 +1789,12 @@ get_prop_fast_chg_started(struct qpnp_chg_chip *chip)
 
 static int
 get_prop_fast_switch_to_normal(struct qpnp_chg_chip *chip)
+{
+	return false;
+}
+
+static int
+get_prop_fast_normal_to_warm(struct qpnp_chg_chip *chip)
 {
 	return false;
 }
@@ -2022,6 +2035,8 @@ qpnp_chg_usb_usbin_valid_irq_handler(int irq, void *_chip)
 		if (!usb_present) {
 			power_supply_set_online(chip->usb_psy, 0);
 			power_supply_set_current_limit(chip->usb_psy, 0);
+			power_supply_set_online(&chip->dc_psy, 0);
+			power_supply_set_current_limit(&chip->dc_psy, 0);
 		}
 #endif
 #ifdef CONFIG_BQ24196_CHARGER
@@ -2066,8 +2081,8 @@ qpnp_chg_bat_if_batt_temp_irq_handler(int irq, void *_chip)
 		return rc;
 	}
 
-	pr_debug("psy changed batt_psy\n");
 #ifndef CONFIG_MACH_OPPO
+	pr_debug("psy changed batt_psy\n");
 	power_supply_changed(&chip->batt_psy);
 #endif
 	return IRQ_HANDLED;
@@ -2519,7 +2534,32 @@ qpnp_power_get_property_mains(struct power_supply *psy,
 		val->intval = 0;
 		if (chip->charging_disabled)
 			return 0;
+
+#ifdef CONFIG_MACH_OPPO
+		if (!qpnp_chg_is_usb_chg_plugged_in(chip))
+			/* Return offline if USB is not present */
+			return 0;
+
+#ifndef CONFIG_BATTERY_BQ27541
+		if (qpnp_charger_type_get(chip) == POWER_SUPPLY_TYPE_USB_DCP)
+			val->intval = 1;
+		else
+			val->intval = 0;
+#else
+		if ((get_prop_fast_chg_started(chip) == true)
+			|| (get_prop_fast_switch_to_normal(chip) == true)
+			|| (get_prop_fast_normal_to_warm(chip) == true)) {
+			val->intval = 1;
+		} else {
+			if (qpnp_charger_type_get(chip) == POWER_SUPPLY_TYPE_USB_DCP)
+				val->intval = 1;
+			else
+				val->intval = 0;
+		}
+#endif /* CONFIG_BATTERY_BQ27541 */
+#else
 		val->intval = qpnp_chg_is_dc_chg_plugged_in(chip);
+#endif
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		val->intval = chip->maxinput_dc_ma * 1000;
@@ -4148,6 +4188,8 @@ qpnp_eoc_work(struct work_struct *work)
 			if (!chip->usb_present) {
 				power_supply_set_online(chip->usb_psy, 0);
 				power_supply_set_current_limit(chip->usb_psy, 0);
+				power_supply_set_online(&chip->dc_psy, 0);
+				power_supply_set_current_limit(&chip->dc_psy, 0);
 			}
 		}
 		pm_relax(chip->dev);
@@ -4384,8 +4426,8 @@ qpnp_chg_insertion_ocv_work(struct work_struct *work)
 	pr_debug("batfet sts = %02x, charge_en = %02x ocv = %d\n",
 			bat_if_sts, charge_en, chip->insertion_ocv_uv);
 	qpnp_chg_charge_en(chip, !chip->charging_disabled);
-	pr_debug("psy changed batt_psy\n");
 #ifndef CONFIG_MACH_OPPO
+	pr_debug("psy changed batt_psy\n");
 	power_supply_changed(&chip->batt_psy);
 #endif
 }
@@ -4770,6 +4812,9 @@ qpnp_dc_power_set_property(struct power_supply *psy,
 	int rc = 0;
 
 	switch (psp) {
+	case POWER_SUPPLY_PROP_PRESENT:
+	case POWER_SUPPLY_PROP_ONLINE:
+		break;
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		if (!val->intval)
 			break;
@@ -4787,9 +4832,7 @@ qpnp_dc_power_set_property(struct power_supply *psy,
 	}
 
 	pr_debug("psy changed dc_psy\n");
-#ifndef CONFIG_MACH_OPPO
 	power_supply_changed(&chip->dc_psy);
-#endif
 	return rc;
 }
 
@@ -4851,8 +4894,8 @@ qpnp_batt_power_set_property(struct power_supply *psy,
 		return -EINVAL;
 	}
 
-	pr_debug("psy changed batt_psy\n");
 #ifndef CONFIG_MACH_OPPO
+	pr_debug("psy changed batt_psy\n");
 	power_supply_changed(&chip->batt_psy);
 #endif
 	return rc;
@@ -6306,6 +6349,8 @@ static void qpnp_check_charger_uovp(struct qpnp_chg_chip *chip)
 			if(!chip->usb_present) {
 				power_supply_set_online(chip->usb_psy, 0);
 				power_supply_set_current_limit(chip->usb_psy, 0);
+				power_supply_set_online(&chip->dc_psy, 0);
+				power_supply_set_current_limit(&chip->dc_psy, 0);
 			}
 		}
 #endif /*CONFIG_MACH_OPPO*/
