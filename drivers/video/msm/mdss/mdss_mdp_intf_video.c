@@ -333,6 +333,8 @@ static int mdss_mdp_video_stop(struct mdss_mdp_ctl *ctl)
 				frame_rate = 24;
 			msleep((1000/frame_rate) + 1);
 		}
+
+		mdss_iommu_ctrl(0);
 		mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF, false);
 		ctx->timegen_en = false;
 
@@ -717,6 +719,12 @@ static int mdss_mdp_video_display(struct mdss_mdp_ctl *ctl, void *arg)
 
 		pr_debug("enabling timing gen for intf=%d\n", ctl->intf_num);
 
+		rc = mdss_iommu_ctrl(1);
+		if (IS_ERR_VALUE(rc)) {
+			pr_err("IOMMU attach failed\n");
+			return rc;
+		}
+
 		mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_ON, false);
 
 		mdss_mdp_irq_enable(MDSS_MDP_IRQ_INTF_UNDER_RUN, ctl->intf_num);
@@ -788,19 +796,12 @@ int mdss_mdp_video_start(struct mdss_mdp_ctl *ctl)
 	struct mdss_data_type *mdata;
 	struct mdss_panel_info *pinfo;
 	struct mdss_mdp_video_ctx *ctx;
-	struct mdss_mdp_mixer *mixer;
 	struct intf_timing_params itp = {0};
 	u32 dst_bpp;
 	int i;
 
 	mdata = ctl->mdata;
 	pinfo = &ctl->panel_data->panel_info;
-	mixer = mdss_mdp_mixer_get(ctl, MDSS_MDP_MIXER_MUX_LEFT);
-
-	if (!mixer) {
-		pr_err("mixer not setup correctly\n");
-		return -ENODEV;
-	}
 
 	i = ctl->intf_num - MDSS_MDP_INTF0;
 	if (i < mdata->nintf) {
